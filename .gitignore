@@ -1,0 +1,14 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Local Job Data (Critical to ignore for privacy/storage)
+jobs/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# .venv
+.venv
+.idea
