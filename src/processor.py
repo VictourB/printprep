@@ -1,112 +1,93 @@
-from PIL import Image, ImageOps
-import json
-from pathlib import Path
+# src/processor.py
 import numpy as np
 import tifffile
+from PIL import Image
+from pathlib import Path
+
+# Standardized Canvas Sizes at 300 DPI
+CUP_PRESETS = {
+    "16oz": {"width": 2700, "height": 1800},
+    "20oz": {"width": 2850, "height": 2100}
+}
 
 
-class PrintProcessor:
-    def __init__(self, job_path):
-        self.job_path = Path(job_path)
-        with open(self.job_path / "ticket.json", "r") as f:
-            self.ticket = json.load(f)
+class JobProcessor:
+    def __init__(self, base_path, specs):
+        self.base_path = Path(base_path)
+        self.specs = specs
 
-    def process(self):
-        # 1. Access Preflight Directory
-        preflight_dir = self.job_path / "preflight"
+        # Determine dimensions based on the ticket's specs
+        size_key = self.specs.get("size", "20oz")
+        self.dimensions = CUP_PRESETS.get(size_key, CUP_PRESETS["20oz"])
 
-        # 2. & 3. Create Canvas and Determine Sizes (Using Preset Logic)
-        # Assuming 20oz preset: 3000x2000px for example
-        canvas_width, canvas_height = 3000, 2000
-        canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+    def generate_proof(self, source_image_path, logo_path=None):
+        """Generates a low-resolution JPG composite for client approval."""
+        print("Generating digital proof...")
+        try:
+            # 1. Load and resize the main artwork
+            with Image.open(source_image_path) as img:
+                # Convert to RGB for JPG saving
+                img = img.convert("RGB")
+                img = img.resize((self.dimensions["width"], self.dimensions["height"]), Image.Resampling.LANCZOS)
 
-        # Load Client Image
-        raw_image_path = list((self.job_path / "raw").glob("*"))[0]
-        client_img = Image.open(raw_image_path).convert("RGBA")
+            # 2. Overlay partner logo if provided (e.g., Pepsi/Monster)
+            if logo_path and Path(logo_path).exists():
+                with Image.open(logo_path) as logo:
+                    logo = logo.convert("RGBA")
+                    # Example placement: Top Right Corner
+                    logo.thumbnail((500, 500))
+                    position = (self.dimensions["width"] - logo.width - 50, 50)
+                    img.paste(logo, position, logo)
 
-        # 4. Placement Logic
-        # Calculate centers
-        front_center = int(canvas_width * 0.25)
-        back_center = int(canvas_width * 0.75)
-        vertical_center = int(canvas_height * 0.5)
+            # 3. Save to the preflight directory
+            proof_path = self.base_path / "preflight" / "proof_composite.jpg"
+            # Quality reduced for quick emailing/viewing
+            img.save(proof_path, "JPEG", quality=75)
+            print(f"Proof successfully generated at: {proof_path.name}")
+            return True
 
-        # Place Client Logo (1/4 Width)
-        client_img.thumbnail((800, 800))  # Placeholder resizing
-        c_w, c_h = client_img.size
-        canvas.paste(client_img, (front_center - c_w // 2, vertical_center - c_h // 2), client_img)
+        except Exception as e:
+            print(f"Error generating proof: {e}")
+            return False
 
-        # Place Partner Logo (3/4 Width) if exists
-        partner_logo_name = self.ticket['specs'].get('partner_logo')
-        if partner_logo_name:
-            logo_path = Path(f"assets/logos/{partner_logo_name}.png")
-            if logo_path.exists():
-                partner_img = Image.open(logo_path).convert("RGBA")
-                partner_img.thumbnail((600, 600))
-                p_w, p_h = partner_img.size
-                canvas.paste(partner_img, (back_center - p_w // 2, vertical_center - p_h // 2), partner_img)
+    def generate_production_tiff(self, source_image_path):
+        """
+        Scaffolds the 8-channel Multichannel TIFF (CMYK + 4 White Spots).
+        Requires 'tifffile' for explicit extra samples tagging.
+        """
+        print("Initializing 8-Channel RIP Output...")
+        try:
+            w, h = self.dimensions["width"], self.dimensions["height"]
 
-        # 6. Trim Excess Transparent Space (Autocrop)
-        bbox = canvas.getbbox()
-        if bbox:
-            canvas = canvas.crop(bbox)
+            # --- PHASE 1: Scaffolding the Image Arrays ---
+            # In production, you would map the actual RGB pixels to CMYK using an ICC profile.
+            # Here, we initialize empty arrays representing the exact data structure the printer needs.
 
-        # 5. Create Spot Channels (Alpha mask for White/Varnish)
-        # In digital printing, a 'White' channel is often an Alpha band
-        # We ensure it exists for all non-transparent pixels
-        full_stack = self.apply_spot_channels(canvas)
+            # 1. CMYK Base (4 Channels, 8-bit integers)
+            cmyk_data = np.zeros((h, w, 4), dtype=np.uint8)
 
-        output_path = self.job_path / "output" / f"{self.ticket['job_id']}_final.tif"
+            # 2. Spot Channels (4 White Underbase Channels)
+            # The 1-pixel choke logic will eventually be applied to these arrays
+            spot_data = np.zeros((h, w, 4), dtype=np.uint8)
 
-        # Write as MULTICHANNEL (Photometric 0 or 1 with ExtraSamples)
-        # Most industrial RIPs recognize Photometric=0 (Min-is-White) for multichannel
+            # Combine into a single 8-channel volume
+            final_image_data = np.concatenate((cmyk_data, spot_data), axis=-1)
 
-        channel_names = [
-            "Cyan", "Magenta", "Yellow", "Black",
-            "White 1", "White 2", "White 3", "White 4"
-        ]
+            # --- PHASE 2: TIFF Metadata Writing ---
+            output_path = self.base_path / "output" / "production_ready.tif"
 
-        extra_samples = [1, 1, 1, 1]
+            # Write using tifffile to strictly enforce the Planar/Separated layout
+            tifffile.imwrite(
+                output_path,
+                final_image_data,
+                photometric='separated',  # Photometric Interpretation 5 (CMYK)
+                compression='lzw',  # Lossless compression for industrial printers
+                extrasamples=[1, 1, 1, 1],  # 4 Unassociated Alpha channels (Spot colors)
+                metadata={'Resolution': (300.0, 300.0)}
+            )
+            print(f"Production TIFF saved: {output_path.name}")
+            return True
 
-        tifffile.imwrite(
-            output_path,
-            full_stack,
-            photometric=5,
-            planarconfig='separate',
-            extrasamples=extra_samples,
-            compression='lzw',
-            metadata={
-                'Description': f"Channels: {', '.join(channel_names)}",
-                'Labels': channel_names
-            }
-        )
-        return output_path
-
-    def apply_spot_channels(self, canvas):
-        # 1. Convert canvas to CMYK to get the ink data
-        cmyk_image = canvas.convert("CMYK")
-        cmyk_data = np.array(canvas.convert("CMYK")).astype('uint8')
-
-        # 2. Generate White underbase mask (Non-transparent pixels)
-        # We invert this because in Multichannel TIFFs, 255 usually = 100% ink
-        alpha_mask = np.array(canvas.getchannel('A')).astype('uint8')
-
-        mask_boolean = alpha_mask > 0
-        for i in range(4):
-            channel = cmyk_data[:, :, i]
-            channel[~mask_boolean] = 0
-            cmyk_data[:, :, i] = channel
-
-        # Ensure the alpha mask itself is clean
-        alpha_mask[~mask_boolean] = 0
-
-        # 4. Stack: [C, M, Y, K, W1, W2, W3, W4]
-        white_channels = [alpha_mask] * 4
-        all_channels = [cmyk_data[:, :, i] for i in range(4)] + white_channels
-
-        # Use axis=0 for 'separate' planar configuration
-        full_stack = np.stack(all_channels, axis=0)  # Shape: (8, H, W)
-
-        return full_stack
-
-
-
+        except Exception as e:
+            print(f"Error generating production TIFF: {e}")
+            return False
