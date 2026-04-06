@@ -8,6 +8,7 @@
 | initialize | Setup folders & ticket | main.py initialize CD01 Pepsi 10 --size 20oz --image ./art.png |
 | status     | View all active jobs   | main.py status                                                 |
 | update     | Log finished cases     | main.py update CD01 5                                          |
+| process    | perform actions        | main.py process CD01 --proof                                   |
 | delete     | Purge a job folder     | main.py delete CD01                                            |
 
 
