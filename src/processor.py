@@ -3,13 +3,7 @@ import numpy as np
 import tifffile
 from PIL import Image
 from pathlib import Path
-
-# Standardized Canvas Sizes at 300 DPI
-CUP_PRESETS = {
-    "16oz": {"width": 2700, "height": 1800},
-    "20oz": {"width": 2850, "height": 2100}
-}
-
+from config import *
 
 class JobProcessor:
     def __init__(self, base_path, specs):
@@ -17,37 +11,57 @@ class JobProcessor:
         self.specs = specs
 
         # Determine dimensions based on the ticket's specs
-        size_key = self.specs.get("size", "20oz")
+        size_key = self.specs.get("cup_size", "20oz")
         self.dimensions = CUP_PRESETS.get(size_key, CUP_PRESETS["20oz"])
 
     def generate_proof(self, source_image_path, logo_path=None):
         """Generates a low-resolution JPG composite for client approval."""
         print("Generating digital proof...")
         try:
-            # 1. Load and resize the main artwork
-            with Image.open(source_image_path) as img:
-                # Convert to RGB for JPG saving
-                img = img.convert("RGB")
-                img = img.resize((self.dimensions["width"], self.dimensions["height"]), Image.Resampling.LANCZOS)
+            # 1. Select Template
+            color = self.specs.get("cup_color", "clear").lower()
+            template_path = Path(f"assets/templates/{color}_cup_base.png")
+            if not template_path.exists():
+                template_path = Path("assets/templates/clear_cup_base.png")
 
-            # 2. Overlay partner logo if provided (e.g., Pepsi/Monster)
-            if logo_path and Path(logo_path).exists():
-                with Image.open(logo_path) as logo:
-                    logo = logo.convert("RGBA")
-                    # Example placement: Top Right Corner
-                    logo.thumbnail((500, 500))
-                    position = (self.dimensions["width"] - logo.width - 50, 50)
-                    img.paste(logo, position, logo)
+            with Image.open(template_path).convert("RGBA") as base:
+                bw, bh = base.size
 
-            # 3. Save to the preflight directory
-            proof_path = self.base_path / "preflight" / "proof_composite.jpg"
-            # Quality reduced for quick emailing/viewing
-            img.save(proof_path, "JPEG", quality=75)
-            print(f"Proof successfully generated at: {proof_path.name}")
-            return True
+                # Define Center Points
+                front_center_x = int(bw * 0.25)
+                back_center_x = int(bw * 0.75)
+                center_y = int(bh * 0.35)
+
+                # 2. Composite Client Image (Front)
+                with Image.open(source_image_path).convert("RGBA") as artwork:
+                    # Scale artwork to fit comfortably (e.g., 40% of template height)
+                    art_h = int(bh * 0.3)
+                    art_w = int(artwork.width * (art_h / artwork.height))
+                    artwork = artwork.resize((art_w, art_h), Image.Resampling.LANCZOS)
+
+                    # Calculate Top-Left corner to keep it centered at 25%
+                    art_pos = (front_center_x - (art_w // 2), center_y - (art_h // 2))
+                    base.paste(artwork, art_pos, artwork)
+
+                # 3. Composite Partner Logo (Back - Optional)
+                if logo_path and Path(logo_path).exists():
+                    with Image.open(logo_path).convert("RGBA") as logo:
+                        # Scale logo slightly smaller than main art
+                        logo_h = int(bh * 0.25)
+                        logo_w = int(logo.width * (logo_h / logo.height))
+                        logo = logo.resize((logo_w, logo_h), Image.Resampling.LANCZOS)
+
+                        # Calculate Top-Left corner to keep it centered at 75%
+                        logo_pos = (back_center_x - (logo_w // 2), center_y - (logo_h // 2))
+                        base.paste(logo, logo_pos, logo)
+
+                # 4. Save Final
+                output_path = self.base_path / "preflight" / "customer_proof.jpg"
+                base.convert("RGB").save(output_path, "JPEG", quality=90)
+                return True
 
         except Exception as e:
-            print(f"Error generating proof: {e}")
+            print(f"Error during proof generation: {e}")
             return False
 
     def generate_production_tiff(self, source_image_path):

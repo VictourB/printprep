@@ -5,20 +5,24 @@ from pathlib import Path
 def select_partner_asset(partner_name, mode, asset_root="assets/partners"):
     partner_path = Path(asset_root) / partner_name
 
+    if partner_name == "none":
+        return None
+
     if not partner_path.exists():
         print(f"Error: Partner directory '{partner_name}' not found.")
         return None
 
-    # Filter files based on mode (CMYK or SPOT)
-    # Most digital printers use _4W for 4-pass white or _CMYK for direct
-    search_term = "_CMYK" if mode == "CMYK" else "_SPOT"
+    # Get ALL files in the partner folder
+    all_files = [f for f in partner_path.glob("*.*") if f.is_file()]
 
-    matches = [f for f in partner_path.glob(f"*{search_term}*") if f.is_file()]
+    if not all_files:
+        print(f"No assets found in {partner_path}")
+        return None
 
-    if not matches:
-        print(f"No assets found for {partner_name} in {mode} mode.")
-        # Fallback to all files in directory if specific mode fails
-        matches = list(partner_path.glob("*"))
+    # Recommendation Logic: if job is CMYK, look for "_CMYK" in filename
+    search_term = f"_{mode}"
+
+    matches = sorted(all_files, key=lambda x: search_term not in x.name)
 
     if len(matches) == 1:
         return matches[0]
@@ -26,7 +30,8 @@ def select_partner_asset(partner_name, mode, asset_root="assets/partners"):
     # Selection Menu
     print(f"\n--- Multiple assets found for {partner_name} ---")
     for i, file in enumerate(matches, 1):
-        print(f"[{i}] {file.name}")
+        recommend = "*" if search_term in file.name else " "
+        print(f"[{i}]{recommend} {file.name}")
 
     while True:
         try:

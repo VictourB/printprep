@@ -5,7 +5,8 @@ PARTNERS = {
     "pepsi_titan",
     "pepsi_zero",
     "drpepper",
-    "cocacola_script"
+    "cocacola_script",
+    "none"
 }
 
 

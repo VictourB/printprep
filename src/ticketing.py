@@ -131,7 +131,7 @@ class PrintPrepJob:
                 # Optional: Clear finished_at if a job is reopened
                 if "timestamps" in data:
                     data["timestamps"]["finished_at"] = None
-            else:
+            elif data["status"] != "proof_generated":
                 data["status"] = "initialized"
         else:
             pass # in canceled or on_hold state only allow manual update
@@ -236,7 +236,7 @@ class PrintPrepJob:
         with open(ticket_file, 'w') as f:
             json.dump(data, f, indent=4)
 
-        print(f"Job {self.job_id} successfully updated.")
+        print(f"Job {data["job_id"]} successfully updated.")
 
     @staticmethod
     def get_all_jobs(root_dir="jobs"):

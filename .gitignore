@@ -4,6 +4,9 @@ __pycache__/
 
 # Local Job Data (Critical to ignore for privacy/storage)
 jobs/
+assets/templates/*.png
+assets/partners/**/*
+!assets/partners/.gitkeep
 
 # OS-specific files
 .DS_Store

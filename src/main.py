@@ -19,7 +19,7 @@ def main():
     # init_p.add_argument("job_id", help="The unique identifier for the job (e.g., 2026-A01)")
     init_p.add_argument("client", help="The name of the client/customer")
     init_p.add_argument("qty", type=int, help="Total quantity in cases to print")
-    init_p.add_argument("--type", default="digital_print", choices=["digital_print", "proof", "sample"])
+    init_p.add_argument("--type", default="digital_print", choices=TYPE_SUFFIXES.keys())
 
     init_p.add_argument("--size", choices=CUP_PRESETS.keys(), default="20oz",
                             help="The cup size preset for the cylindrical wrap")
@@ -47,6 +47,9 @@ def main():
     up_p.add_argument("--key", help="The specific ticket key to change (e.g., specs, notes, deadline)")
     up_p.add_argument("--op", help="Operator initials")
     up_p.add_argument("--units", action="store_true", help="Treat value as individual cups")
+    up_p.add_argument("--image", type=Path, help="Add or replace client artwork")
+    up_p.add_argument("--logo", choices=PARTNERS, default="none",
+                        help="Optional partner logo to include in the composite")
 
     # --- PROCESS ---
     proc_p = subparsers.add_parser("process", help="Run image processing")
@@ -134,12 +137,16 @@ def process_command(args):
 
     # 3. Find the raw source image
     raw_dir = folder_path / "raw"
-    raw_files = list(raw_dir.glob("*.*"))
-    if not raw_files:
-        print("Error: No source image found in the 'raw' directory.")
+
+    # Look specifically for the client image, regardless of extension
+    client_files = list(raw_dir.glob("client_image.*"))
+
+    if not client_files:
+        print(f"Error: Could not find 'client_image' in {raw_dir.name}.")
         return
 
-    source_image = raw_files[0]  # Grab the first file in raw/
+    source_image = client_files[0]  # Grab the first file in raw/
+    logo_name = specs.get("partner_logo")
 
     # 4. Initialize Processor
     processor = JobProcessor(base_path=folder_path, specs=specs)
@@ -147,7 +154,8 @@ def process_command(args):
     # 5. Execute requested action
     if args.proof:
         # Assuming you pass a logo path via args, or leave None
-        processor.generate_proof(source_image)
+        processor.generate_proof(source_image, utils.select_partner_asset(logo_name, data.get("specs").get("print_mode", "SPOT")))
+        # print(data.get("specs").get("print_mode"))
         # Automatically update the ticket status to note a proof was made
         job = PrintPrepJob(args.job_id, data["client_name"], 0)
         job.base_path = folder_path
@@ -189,10 +197,13 @@ def initialize_command(args):
         if args.images:
             for img_path in args.images:
                 if img_path.exists():
-                    shutil.copy(img_path, job.base_path / "raw" / img_path.name)
+                    ext = img_path.suffix
+                    new_name = f"client_image{ext}"
+                    dest = job.base_path / "raw" / new_name
+                    shutil.copy(img_path, dest)
             print(f"-> {len(args.images)} assets imported.")
 
-        if args.logo:
+        if args.logo and args.logo != "none":
             asset_path = utils.select_partner_asset(args.logo, args.mode)
 
             if asset_path:
@@ -211,10 +222,7 @@ def initialize_command(args):
 
 def update_command(args):
     # Logic to find the folder since the folder name includes a date and client name
-    root_jobs = Path("jobs")
-    # Search for any folder containing the job_id
-    target_folders = list(root_jobs.glob(f"*_{args.job_id}_*"))
-
+    target_folders = list(Path("jobs").glob(f"*_{args.job_id}_*"))
     if not target_folders:
         print(f"Error: No folder found for Job ID {args.job_id}")
         return
@@ -224,22 +232,71 @@ def update_command(args):
     folder_path = target_folders[0]
     client_name = folder_path.name.split('_')[-1]
 
-    job = PrintPrepJob(args.job_id, client_name, 0)
-    job.base_path = folder_path  # Override base path to the existing one
+    job = PrintPrepJob(args.job_id, target_folders[0].name.split('_')[-1], 0)
+    job.base_path = target_folders[0]
 
-    # If no arguments at all, show ticket. Otherwise, update.
-    job.update_ticket(
-        value=args.value,
-        key=args.key,
-        operator=args.op,
-        scrap=args.scrap,
-        units=args.units
-    )
+    # --- IMAGE INJECTION LOGIC ---
+    if getattr(args, 'image', None):
+        if args.image.exists():
+            raw_dir = job.base_path / "raw"
+
+            # 1. Purge any existing client artwork to prevent conflicts
+            for old_file in raw_dir.glob("client_image.*"):
+                old_file.unlink()
+                print(f"Removed old artwork: {old_file.name}")
+
+            # 2. Copy and rename the new artwork
+            ext = args.image.suffix
+            new_name = f"client_image{ext}"
+            shutil.copy(args.image, raw_dir / new_name)
+            print(f"Success: Linked new artwork as {new_name}")
+        else:
+            print(f"Error: Source image file '{args.image}' not found.")
+
+        # If the user ONLY wanted to update the image, exit cleanly here
+        if args.value is None and args.key is None and args.op is None:
+            return
+    # ---------------------------------
+
+    # --- LOGO SWAP LOGIC ---
+    if args.logo and args.logo != "none":
+        raw_dir = job.base_path / "raw"
+
+
+        # 2. Select new logo using our multi-mode utility
+        # We pull the current mode from the ticket to give the [REC] tag
+        with open(job.base_path / "ticket.json", 'r') as f:
+            current_ticket = json.load(f)
+            current_mode = current_ticket.get("specs", {}).get("print_mode", "SPOT")
+
+        actual_id = current_ticket.get("job_id")
+        new_logo_path = utils.select_partner_asset(args.logo, current_mode)
+
+        if new_logo_path:
+            # Remove ONLY partner files (not client_image)
+            for old_file in raw_dir.glob("*.*"):
+                if "client_image" not in old_file.name:
+                    try:
+                        old_file.unlink()
+                    except Exception as e:
+                        print(f"Warning: Could not delete {old_file.name}: {e}")
+
+            shutil.copy(new_logo_path, raw_dir / new_logo_path.name)
+            job.update_ticket(key="partner_logo", value=args.logo)
+            print(f"Successfully updated logo to: {new_logo_path.name}")
+
+        if args.value is None and args.key is None and args.image is None:
+            return
+
+    if args.value is None and args.key is None and args.op is None:
+        job.display_ticket()
+    else:
+        job.update_ticket(value=args.value, key=args.key, operator=args.op, scrap=args.scrap, units=args.units)
 
 def status_command(args):
     root_jobs = Path("jobs")
     all_tickets = PrintPrepJob.get_all_jobs()
-    valid_statuses = ["initialized", "in_progress", "on_hold", "canceled", "finished"]
+    valid_statuses = ["initialized", "in_progress", "on_hold", "canceled", "finished", "proof_generated"]
 
     # Handle the 'all' keyword
     if args.target is not None and args.target.lower() == "all":
