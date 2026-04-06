@@ -1,5 +1,5 @@
 # PrintPrep
-**PrintPrep** is a Command Line Interface (CLI) designed to bridge the gap between digital artwork and physical factory production.
+**PrintPrep** is a Command Line Interface (CLI) designed to bridge the gap between digital artwork and physical factory production. It offers a robust ticketing system and automatic proof generation.
 
 ## Main Syntax:
 
